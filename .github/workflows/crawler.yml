@@ -30,11 +30,18 @@ jobs:
         with:
           fetch-depth: 1
           clean: true
-        # 增加重试，避免网络问题导致 checkout 失败
-        continue-on-error: true
-        retry:
+        # 移除不支持的retry，改用官方重试Action
+        continue-on-error: false
+
+      # 新增：专门的重试Action处理checkout失败
+      - name: Retry Checkout if failed
+        if: failure() && steps.Checkout-repository.outcome == 'failure'
+        uses: nick-fields/retry@v3
+        with:
           max_attempts: 3
           delay_seconds: 10
+          command: |
+            git clone --depth=1 ${{ github.server_url }}/${{ github.repository }}.git .
 
       - name: Check Expiration
         env:
@@ -77,14 +84,13 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-        # 依赖安装失败时重试
-        continue-on-error: true
-        retry:
+        uses: nick-fields/retry@v3  # 用官方重试Action替代自定义retry
+        with:
           max_attempts: 2
           delay_seconds: 5
+          command: |
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
 
       - name: Verify required files
         run: |
@@ -125,9 +131,18 @@ jobs:
           GITHUB_ACTIONS: true
         run: python -m trendradar
 
-      # 可选：任务失败时发送通知（如果配置了飞书/钉钉等webhook）
+      # 完善：任务失败时发送飞书通知
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "❌ 爬虫任务执行失败，请检查日志"
-          # 如果需要可以在这里添加失败通知逻辑
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          method: POST
+          content-type: application/json
+          data: |
+            {
+              "message_type": "text",
+              "content": {
+                "text": "❌ TrendRadar爬虫任务执行失败！\n仓库：${{ github.repository }}\n触发事件：${{ github.event_name }}\n运行ID：${{ github.run_id }}\n查看日志：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }
+            }
