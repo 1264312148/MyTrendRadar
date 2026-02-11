@@ -16,7 +16,7 @@ permissions:
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # 延长超时时间，避免爬虫执行超时
+    timeout-minutes: 20  # 修复：明确配置超时参数
     continue-on-error: false
     strategy:
       fail-fast: true
@@ -30,16 +30,15 @@ jobs:
         with:
           fetch-depth: 1
           clean: true
-        # 移除不支持的retry，改用官方重试Action
         continue-on-error: false
 
-      # 新增：专门的重试Action处理checkout失败
+      # 修复：调整重试Action的参数名
       - name: Retry Checkout if failed
-        if: failure() && steps.Checkout-repository.outcome == 'failure'
+        if: failure() && steps.Checkout\ repository.outcome == 'failure'
         uses: nick-fields/retry@v3
         with:
           max_attempts: 3
-          delay_seconds: 10
+          timeout_minutes: 1  # 替换delay_seconds为timeout_minutes
           command: |
             git clone --depth=1 ${{ github.server_url }}/${{ github.repository }}.git .
 
@@ -83,11 +82,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
+      # 修复：调整重试Action的参数名
       - name: Install dependencies
-        uses: nick-fields/retry@v3  # 用官方重试Action替代自定义retry
+        uses: nick-fields/retry@v3
         with:
           max_attempts: 2
-          delay_seconds: 5
+          timeout_minutes: 1  # 替换delay_seconds为timeout_minutes
           command: |
             python -m pip install --upgrade pip
             pip install -r requirements.txt
@@ -131,14 +131,14 @@ jobs:
           GITHUB_ACTIONS: true
         run: python -m trendradar
 
-      # 完善：任务失败时发送飞书通知
+      # 修复：将content-type改为contentType
       - name: Notify on failure
         if: failure()
         uses: fjogeleit/http-request-action@v1
         with:
           url: ${{ secrets.FEISHU_WEBHOOK_URL }}
           method: POST
-          content-type: application/json
+          contentType: application/json  # 修复参数名
           data: |
             {
               "message_type": "text",
