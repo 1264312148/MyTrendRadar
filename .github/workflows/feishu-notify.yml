@@ -1,0 +1,13 @@
+name: 消息测试
+on: [workflow_dispatch] # 支持手动触发
+
+jobs:
+  send-message:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 发送测试消息
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: ${{ secrets.FEISHU_WEBHOOK_URL }} # 调用配置好的密钥
+          method: POST
+          data: '{"message_type": "text", "content": {"text": "测试消息：GitHub Secrets配置成功"}}'
