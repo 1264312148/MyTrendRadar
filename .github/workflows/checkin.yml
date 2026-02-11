@@ -1,0 +1,31 @@
+name: Check In
+
+on:
+  workflow_dispatch:  # 手动触发
+  schedule:
+    - cron: "0 0 1 */6 *"  # 每6个月自动续期（可选，可删除这两行只保留手动触发）
+
+permissions:
+  actions: write
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Renew trial period
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          WORKFLOW_FILE="crawler.yml"
+          echo "🔄 Running check-in to renew trial period..."
+          
+          # 重置试用期起始时间（通过创建一个新的空运行记录）
+          gh workflow run "$WORKFLOW_FILE" --ref master
+          
+          echo "✅ Check-in completed successfully!"
+          echo "✅ Trial period has been renewed."
