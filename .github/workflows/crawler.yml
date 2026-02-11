@@ -16,7 +16,7 @@ permissions:
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # 修复：明确配置超时参数
+    timeout-minutes: 20  # 任务整体超时时间（必填）
     continue-on-error: false
     strategy:
       fail-fast: true
@@ -25,23 +25,26 @@ jobs:
         python-version: ["3.10"]
 
     steps:
+      # 步骤1：拉取代码（添加id，避免空格转义问题）
       - name: Checkout repository
+        id: checkout  # 核心修复：添加id用于后续引用
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           clean: true
         continue-on-error: false
 
-      # 修复：调整重试Action的参数名
+      # 步骤2：Checkout失败时重试（用id引用，无转义错误）
       - name: Retry Checkout if failed
-        if: failure() && steps.Checkout\ repository.outcome == 'failure'
+        if: failure() && steps.checkout.outcome == 'failure'
         uses: nick-fields/retry@v3
         with:
           max_attempts: 3
-          timeout_minutes: 1  # 替换delay_seconds为timeout_minutes
+          timeout_minutes: 1  # 修复：替换不支持的delay_seconds
           command: |
             git clone --depth=1 ${{ github.server_url }}/${{ github.repository }}.git .
 
+      # 步骤3：检查试用期是否过期
       - name: Check Expiration
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,22 +79,24 @@ jobs:
             fi
           fi
 
+      # 步骤4：配置Python环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      # 修复：调整重试Action的参数名
+      # 步骤5：安装依赖（带重试）
       - name: Install dependencies
         uses: nick-fields/retry@v3
         with:
           max_attempts: 2
-          timeout_minutes: 1  # 替换delay_seconds为timeout_minutes
+          timeout_minutes: 1  # 修复：替换不支持的delay_seconds
           command: |
             python -m pip install --upgrade pip
             pip install -r requirements.txt
 
+      # 步骤6：验证必要配置文件
       - name: Verify required files
         run: |
           if [ ! -f config/config.yaml ]; then
@@ -99,6 +104,7 @@ jobs:
             exit 1
           fi
 
+      # 步骤7：运行爬虫
       - name: Run crawler
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
@@ -131,14 +137,14 @@ jobs:
           GITHUB_ACTIONS: true
         run: python -m trendradar
 
-      # 修复：将content-type改为contentType
+      # 步骤8：失败时发送飞书通知（修复content-type为contentType）
       - name: Notify on failure
         if: failure()
         uses: fjogeleit/http-request-action@v1
         with:
           url: ${{ secrets.FEISHU_WEBHOOK_URL }}
           method: POST
-          contentType: application/json  # 修复参数名
+          contentType: application/json  # 核心修复：参数名改为驼峰式
           data: |
             {
               "message_type": "text",
