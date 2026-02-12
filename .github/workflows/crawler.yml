@@ -2,8 +2,8 @@ name: Get Hot News
 
 on:
   schedule:
-    - cron: "33 * * * *"  # 每小时第33分钟运行
-  workflow_dispatch:  # 手动触发
+    - cron: "33 9-20 * * *"  # 每天9:00-20:00，每小时第33分钟自动运行
+  workflow_dispatch:  # 保留手动触发
 
 concurrency:
   group: crawler-${{ github.ref_name }}
@@ -16,7 +16,7 @@ permissions:
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 20  # 任务整体超时时间（必填）
+    timeout-minutes: 20
     continue-on-error: false
     strategy:
       fail-fast: true
@@ -25,78 +25,65 @@ jobs:
         python-version: ["3.10"]
 
     steps:
-      # 步骤1：拉取代码（添加id，避免空格转义问题）
       - name: Checkout repository
-        id: checkout  # 核心修复：添加id用于后续引用
+        id: checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           clean: true
-        continue-on-error: false
 
-      # 步骤2：Checkout失败时重试（用id引用，无转义错误）
       - name: Retry Checkout if failed
         if: failure() && steps.checkout.outcome == 'failure'
         uses: nick-fields/retry@v3
         with:
           max_attempts: 3
-          timeout_minutes: 1  # 修复：替换不支持的delay_seconds
+          timeout_minutes: 1
           command: |
             git clone --depth=1 ${{ github.server_url }}/${{ github.repository }}.git .
 
-      # 步骤3：检查试用期是否过期
       - name: Check Expiration
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           WORKFLOW_FILE="crawler.yml"
           API_URL="repos/${{ github.repository }}/actions/workflows/$WORKFLOW_FILE/runs"
-
           TOTAL=$(gh api "$API_URL" --jq '.total_count')
           if [ -z "$TOTAL" ] || [ "$TOTAL" -eq 0 ]; then
             echo "No previous runs found, skipping expiration check"
             exit 0
           fi
-
           LAST_PAGE=$(( (TOTAL + 99) / 100 ))
           FIRST_RUN_DATE=$(gh api "$API_URL?per_page=100&page=$LAST_PAGE" --jq '.workflow_runs[-1].created_at')
-
           if [ -n "$FIRST_RUN_DATE" ]; then
             CURRENT_TIMESTAMP=$(date +%s)
             FIRST_RUN_TIMESTAMP=$(date -d "$FIRST_RUN_DATE" +%s)
             DIFF_SECONDS=$((CURRENT_TIMESTAMP - FIRST_RUN_TIMESTAMP))
             LIMIT_SECONDS=604800
-
             if [ $DIFF_SECONDS -gt $LIMIT_SECONDS ]; then
               echo "⚠️  试用期已结束，请运行 'Check In' 签到续期"
-              echo "⚠️ Trial expired. Run 'Check In' to renew."
               gh workflow disable "$WORKFLOW_FILE"
               exit 1
             else
               DAYS_LEFT=$(( (LIMIT_SECONDS - DIFF_SECONDS) / 86400 ))
-              echo "✅ 试用期剩余 ${DAYS_LEFT} 天，到期前请运行 'Check In' 签到续期"
-              echo "✅ Trial: ${DAYS_LEFT} days left. Run 'Check In' before expiry to renew."
+              echo "✅ 试用期剩余 ${DAYS_LEFT} 天"
             fi
           fi
 
-      # 步骤4：配置Python环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      # 步骤5：安装依赖（带重试）
       - name: Install dependencies
         uses: nick-fields/retry@v3
         with:
           max_attempts: 2
-          timeout_minutes: 1  # 修复：替换不支持的delay_seconds
+          timeout_minutes: 1
           command: |
             python -m pip install --upgrade pip
             pip install -r requirements.txt
 
-      # 步骤6：验证必要配置文件
       - name: Verify required files
         run: |
           if [ ! -f config/config.yaml ]; then
@@ -104,8 +91,9 @@ jobs:
             exit 1
           fi
 
-      # 步骤7：运行爬虫
-      - name: Run crawler
+      # 核心修改：运行爬虫并捕获是否有热点内容
+      - name: Run crawler and check content
+        id: run_crawler
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -135,20 +123,44 @@ jobs:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_REGION: ${{ secrets.S3_REGION }}
           GITHUB_ACTIONS: true
-        run: python -m trendradar
+        run: |
+          # 运行爬虫并记录输出
+          python -m trendradar > crawler_output.log 2>&1
+          # 检查是否有热点内容（关键词：新增热点、热榜、AI分析等）
+          if grep -q -E "新增热点|热榜|AI分析|今日头条|百度热搜" crawler_output.log; then
+            echo "has_content=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_content=false" >> $GITHUB_OUTPUT
+          fi
 
-      # 步骤8：失败时发送飞书通知（修复content-type为contentType）
+      # 无热点时推送「还有没有新热点」
+      - name: Push empty content message
+        if: steps.run_crawler.outputs.has_content == 'false'
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          method: POST
+          contentType: application/json
+          data: |
+            {
+              "message_type": "text",
+              "content": {
+                "text": "还有没有新热点"
+              }
+            }
+
+      # 失败通知
       - name: Notify on failure
         if: failure()
         uses: fjogeleit/http-request-action@v1
         with:
           url: ${{ secrets.FEISHU_WEBHOOK_URL }}
           method: POST
-          contentType: application/json  # 核心修复：参数名改为驼峰式
+          contentType: application/json
           data: |
             {
               "message_type": "text",
               "content": {
-                "text": "❌ TrendRadar爬虫任务执行失败！\n仓库：${{ github.repository }}\n触发事件：${{ github.event_name }}\n运行ID：${{ github.run_id }}\n查看日志：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                "text": "❌ TrendRadar爬虫任务执行失败！\n仓库：${{ github.repository }}\n运行ID：${{ github.run_id }}\n查看日志：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
               }
             }
